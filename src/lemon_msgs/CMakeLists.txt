@@ -9,6 +9,7 @@ find_package(geometry_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LemonEllipse.msg"
   "msg/LemonEllipseArray.msg"
+  "srv/SelectTarget.srv"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

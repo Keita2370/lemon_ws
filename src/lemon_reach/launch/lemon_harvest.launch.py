@@ -57,6 +57,8 @@ def generate_launch_description():
         target_params = [{
             "use_sim_time": sim,
             "score_threshold": float(arg("score_threshold")),
+            # auto: 一番近いものを自動で選ぶ / manual: ~/select で人が選ぶ (UI 用)
+            "selection_mode": arg("selection_mode"),
         }]
         # 指先をレモン中心よりどれだけ奥まで入れるか。approach はその先 3 cm まで
         # 直線で入れられることを確かめる (insert_margin >= grasp_depth + 0.03)
@@ -140,6 +142,12 @@ def generate_launch_description():
             default_value="true",
             description="Whether to run the harvest sequence "
                         "(false: call each node's services manually)",
+        ),
+        DeclareLaunchArgument(
+            "selection_mode",
+            default_value="auto",
+            description="How lemon_target picks the target "
+                        "(auto: nearest stable lemon, manual: wait for ~/select)",
         ),
         DeclareLaunchArgument(
             "score_threshold",

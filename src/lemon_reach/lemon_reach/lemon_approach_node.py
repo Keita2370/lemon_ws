@@ -665,6 +665,10 @@ class LemonApproach(Node):
         if self.target is None:
             response.success = False
             response.message = "no target"
+            # 早く打ち切る失敗も status に出す（UI が status だけを見ていても分かるように）。
+            # busy は出さない: 別の approach が動いている最中に出すと、その "approaching" を
+            # 上書きして、動いているのに失敗したように見えてしまう
+            self.publish_status(response.message)
             return response
 
         self.busy = True
@@ -675,11 +679,13 @@ class LemonApproach(Node):
             if insertion is False:
                 response.success = False
                 response.message = "failed to compute pregrasp"
+                self.publish_status(response.message)
                 return response
 
             if insertion is None:
                 response.success = False
                 response.message = "cannot insert straight into the lemon"
+                self.publish_status(response.message)
                 return response
 
             pregrasp, joints = insertion

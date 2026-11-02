@@ -28,9 +28,9 @@ ros2 launch lemon_reach lemon_harvest.launch.py            # sim:=true で Isaac
 
 | ノード名 | パッケージ / 実行ファイル | 役割 | 提供する Service |
 |---|---|---|---|
-| `lemon_target` | lemon_reach / `lemon_target_node` | 安定して見えるレモンを1つ選んで固定し、位置・短辺の向きを配信 | `~/release`, `~/clear_exclusions` |
+| `lemon_target` | lemon_reach / `lemon_target_node` | 安定して見えるレモンを1つ選んで固定し、位置・短辺の向きを配信 | `~/release`, `~/clear_exclusions`, `~/select` |
 | `lemon_approach` | lemon_reach / `lemon_approach_node` | 固定したレモンの手前 (pregrasp) へ MoveIt で移動 | `~/approach` |
-| `lemon_grasp` | lemon_grasp / `lemon_grasp_node` (C++) | MoveIt Servo で追従しながら指先を差し込み、掴んで pregrasp へ戻る | `~/grasp`, `~/open` |
+| `lemon_grasp` | lemon_grasp / `lemon_grasp_node` (C++) | MoveIt Servo で追従しながら指先を差し込み、掴んで pregrasp へ戻る | `~/grasp`, `~/open`, `~/stop` |
 | `arm_home` | lemon_reach / `arm_home_node` | 起動時の姿勢を home として記録し、そこへ戻す | `~/go_home`, `~/set_home` |
 | `lemon_harvest_manager` | lemon_reach / `lemon_harvest_manager_node` | 上の Service を順に呼ぶシーケンサ (`auto_run:=false` で起動しない) | — |
 
@@ -141,6 +141,21 @@ ros2 service call /lemon_target/release    std_srvs/srv/Trigger
   `max_track_offset` 10 cm 以内) の検出を `track_alpha` で平滑化して `~/tracked` を更新する。
   `~/release` で COLLECTING に戻る。
 
+対象の選び方は `selection_mode` で切り替える。
+
+- **auto** (既定): 上のとおり、安定したもののうち一番近いものを自動で選ぶ。
+- **manual**: 自動では選ばない。`~/select` (`lemon_msgs/srv/SelectTarget`) で指定した位置に
+  一番近い安定したレモンを固定する (UI で人が検出枠をクリックして選ぶため)。
+  指定位置から `select_radius` (5 cm) より遠ければ断る。人が選ぶので除外リストでは外さない。
+- `~/select` はどちらのモードでも使える。**固定中は断る** (把持中に対象が入れ替わると
+  危ないため。先に `~/release`)。安定した候補が無いときは理由を返す
+  (観測が 3 s 未満 / フレーム不足 / 映っている割合が `min_detection_ratio` 未満)。
+
+```bash
+ros2 service call /lemon_target/select lemon_msgs/srv/SelectTarget \
+  "{point: {header: {frame_id: base_link}, point: {x: 0.36, y: 0.05, z: 0.03}}}"
+```
+
 その他のポイント:
 
 - 検出は **撮影時刻の TF** で base_link に変換する (最新の TF だと YOLO の遅延分だけずれる)。
@@ -187,6 +202,12 @@ move_group の軌道実行と指令がぶつからないようにしている。
 
 `~/open` はグリッパを開いて、取り付けたレモンを外す。
 
+`~/stop` は把持を途中で止める (呼ばない限り動きは変わらない)。差し込み中は Servo を
+タイムアウトと同じ経路 (`stopMotion`) で止め、閉じている最中・cartesian の戻りの最中は
+グリッパ / アームの JTC のゴールを取り消す。止めたら閉じる・戻る段は飛ばし、`~/grasp` は
+`success=false, message="stopped (while ...)"` を返す。**アームはレモンや枝の近くに残る**ので、
+戻すのは呼んだ側 (`/arm_home/go_home` など)。把持していないときは何もせず成功を返す。
+
 Servo の設定は `lemon_grasp/config/servo.yaml` (実機では `servo_real.yaml` で上書き)。
 planning_frame は `base_link`、出力は `~/servo_trajectory` を経由して
 `/arm_controller/joint_trajectory` へ送る。Servo の衝突チェックは自己干渉だけ (octomap は見ない)。
@@ -204,6 +225,7 @@ planning_frame は `base_link`、出力は `~/servo_trajectory` を経由して
 |---|---|---|
 | `sim` | `false` | `true`: Isaac Sim 用 (`use_sim_time`)、`false`: 実機用の上書きを入れる |
 | `auto_run` | `true` | `false` で manager を起動しない (Service を手で呼ぶ) |
+| `selection_mode` | `auto` | lemon_target の対象の選び方。`manual` なら `~/select` を待つ (UI で人が選ぶ) |
 | `score_threshold` | `0.5` | lemon_target が使う YOLO スコアの下限 |
 | `grasp_depth` | `0.03` | 指先をレモン中心からさらに入れる距離 [m] |
 | `insert_margin` | `0.06` | approach が直線挿入を確かめる、レモン中心からの奥行き [m] (`>= grasp_depth + 0.03` にする) |

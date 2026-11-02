@@ -1,0 +1,9 @@
+# 指定した位置に一番近い、安定して見えている Lemon を把持対象として固定する
+# (lemon_target の ~/select。UI で人が対象を選ぶために使う)
+#
+# point の frame_id が base_frame でなければ TF で変換する。
+# stamp が 0 なら最新の TF を使う。
+geometry_msgs/PointStamped point
+---
+bool success
+string message

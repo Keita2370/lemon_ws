@@ -5,6 +5,7 @@ from collections import deque
 import numpy as np
 
 import rclpy
+from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy
@@ -14,6 +15,7 @@ import tf2_ros
 from tf2_ros import TransformException
 from geometry_msgs.msg import PointStamped, TransformStamped, Vector3Stamped
 from lemon_msgs.msg import LemonEllipseArray
+from lemon_msgs.srv import SelectTarget
 from std_srvs.srv import Trigger
 
 
@@ -42,6 +44,14 @@ class LemonTarget(Node):
     状態:
         COLLECTING: window_sec 秒間の検出を集めて安定したLemonを探す
         LOCKED:     選択した位置にTFを置き続ける (~/release で解除)
+
+    対象の選び方 (selection_mode):
+        auto:   安定したLemonのうち base_frame から一番近いものを自動で選ぶ (従来)
+        manual: 自動では選ばない。~/select (lemon_msgs/SelectTarget) で指定した位置に
+                一番近い安定したLemonを選ぶ。UI で人が対象をクリックして選ぶため。
+                人が選ぶので除外リストでは候補を外さない
+        ~/select はどちらのモードでも使える。固定中は断る (把持中に対象が
+        入れ替わると危ないため。先に ~/release する)
     """
 
     def __init__(self):
@@ -82,6 +92,10 @@ class LemonTarget(Node):
         self.declare_parameter("lemon_frame", "lemon_target")
         self.declare_parameter("tracked_frame", "lemon_tracked")
         self.declare_parameter("tf_rate", 20.0)
+        # auto: 自動で一番近いものを選ぶ / manual: ~/select を待つ
+        self.declare_parameter("selection_mode", "auto")
+        # ~/select の位置と、選ぶ Lemon の中心がこれより離れていたら断る [m]
+        self.declare_parameter("select_radius", 0.05)
 
         self.class_name = self.get_parameter("class_name").value.lower()
         self.base_frame = self.get_parameter("base_frame").value
@@ -101,6 +115,13 @@ class LemonTarget(Node):
         self.min_axis_consistency = self.get_parameter("min_axis_consistency").value
         self.lemon_frame = self.get_parameter("lemon_frame").value
         self.tracked_frame = self.get_parameter("tracked_frame").value
+        self.selection_mode = self.get_parameter("selection_mode").value.lower()
+        self.select_radius = self.get_parameter("select_radius").value
+
+        if self.selection_mode not in ("auto", "manual"):
+            raise ValueError(
+                f"selection_mode must be auto or manual: {self.selection_mode}"
+            )
 
         # 収集中の状態
         self.frames = []        # 受信したフレームの時刻
@@ -139,6 +160,9 @@ class LemonTarget(Node):
         self.create_service(
             Trigger, "~/clear_exclusions", self.clear_exclusions_callback
         )
+        self.create_service(SelectTarget, "~/select", self.select_callback)
+
+        self.get_logger().info(f"Selection mode: {self.selection_mode}")
 
         self.create_subscription(
             LemonEllipseArray,
@@ -224,7 +248,8 @@ class LemonTarget(Node):
             if self.max_distance > 0.0 and np.linalg.norm(p) > self.max_distance:
                 continue
 
-            if any(
+            # manual では人が選ぶので、除外リストで候補を外さない
+            if self.selection_mode == "auto" and any(
                 np.linalg.norm(p - e) < self.exclusion_radius
                 for e in self.exclusions
             ):
@@ -247,17 +272,11 @@ class LemonTarget(Node):
             ]
         self.candidates = [c for c in self.candidates if c["samples"]]
 
-        # window_sec 秒以上集めてから判定
-        if t - self.start_time < self.window_sec:
+        # manual では自動で選ばない (~/select を待つ)
+        if self.selection_mode != "auto":
             return
 
-        if len(self.frames) < self.min_frames:
-            return
-
-        stable = [
-            c for c in self.candidates
-            if len(c["samples"]) / len(self.frames) >= self.min_detection_ratio
-        ]
+        stable = self.stable_candidates(t)
 
         if not stable:
             return
@@ -266,6 +285,23 @@ class LemonTarget(Node):
         best = min(stable, key=lambda c: np.linalg.norm(self.center(c)))
 
         self.lock(best, t)
+
+    def stable_candidates(self, t):
+        """
+        window_sec 秒以上集めたうえで、min_detection_ratio 以上のフレームで
+        見えている候補。まだ判定できなければ空
+        """
+
+        if self.start_time is None or t - self.start_time < self.window_sec:
+            return []
+
+        if len(self.frames) < self.min_frames:
+            return []
+
+        return [
+            c for c in self.candidates
+            if len(c["samples"]) / len(self.frames) >= self.min_detection_ratio
+        ]
 
     # --------------------------------------------------
     # 固定中の追従
@@ -564,6 +600,96 @@ class LemonTarget(Node):
         self.get_logger().info(response.message)
 
         return response
+
+    def select_callback(self, request, response):
+
+        if self.locked is not None:
+            response.success = False
+            response.message = "a target is already locked (call ~/release first)"
+            return response
+
+        p = self.to_base_frame(request.point)
+
+        if p is None:
+            response.success = False
+            response.message = (
+                f"cannot transform {request.point.header.frame_id} "
+                f"to {self.base_frame}"
+            )
+            return response
+
+        # 判定の時刻は最後に受け取ったフレーム (検出と同じ時計で数える)
+        t = self.frames[-1] if self.frames else None
+        stable = self.stable_candidates(t) if t is not None else []
+
+        if not stable:
+            response.success = False
+            response.message = self.unstable_reason(t)
+            return response
+
+        best = min(stable, key=lambda c: np.linalg.norm(self.center(c) - p))
+        dist = np.linalg.norm(self.center(best) - p)
+
+        if dist > self.select_radius:
+            response.success = False
+            response.message = (
+                f"no stable lemon within {self.select_radius:.2f} m "
+                f"(nearest {dist:.3f} m)"
+            )
+            return response
+
+        self.lock(best, t)
+
+        c = self.locked.point
+        response.success = True
+        response.message = f"Locked ({c.x:.3f}, {c.y:.3f}, {c.z:.3f})"
+        self.get_logger().info(f"Selected: {response.message}")
+
+        return response
+
+    def unstable_reason(self, t):
+        """安定した候補が無い理由 (~/select の応答に出す。人が見て次にどうするか分かるように)"""
+
+        if t is None or self.start_time is None:
+            return "no detections yet"
+
+        elapsed = t - self.start_time
+
+        if elapsed < self.window_sec:
+            return f"collecting detections ({elapsed:.1f} / {self.window_sec:.0f} s)"
+
+        if len(self.frames) < self.min_frames:
+            return (
+                f"too few frames in the last {self.window_sec:.0f} s "
+                f"({len(self.frames)} < {self.min_frames})"
+            )
+
+        if not self.candidates:
+            return "no lemon in view"
+
+        best = max(len(c["samples"]) for c in self.candidates) / len(self.frames)
+        return (
+            f"no lemon seen steadily (best {best:.0%} of frames "
+            f"< {self.min_detection_ratio:.0%})"
+        )
+
+    def to_base_frame(self, point):
+        """PointStamped を base_frame の np.array にする。変換できなければ None"""
+
+        if point.header.frame_id in ("", self.base_frame):
+            return np.array([point.point.x, point.point.y, point.point.z])
+
+        try:
+            import tf2_geometry_msgs  # noqa: F401  PointStamped の変換を登録する
+            out = self.tf_buffer.transform(
+                point, self.base_frame,
+                timeout=Duration(seconds=self.tf_timeout)
+            )
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warn(f"Select: TF failed: {e}")
+            return None
+
+        return np.array([out.point.x, out.point.y, out.point.z])
 
     def clear_exclusions_callback(self, request, response):
 

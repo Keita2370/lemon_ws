@@ -186,6 +186,11 @@ public:
       "~/open",
       [this](Trigger::Request::SharedPtr, Trigger::Response::SharedPtr res) {open_callback(res);},
       rmw_qos_profile_services_default, cb_group_);
+    // 把持の途中で止める。grasp と同じ Reentrant グループなので把持中でも受け付ける
+    stop_srv_ = create_service<Trigger>(
+      "~/stop",
+      [this](Trigger::Request::SharedPtr, Trigger::Response::SharedPtr res) {stop_callback(res);},
+      rmw_qos_profile_services_default, cb_group_);
 
     target_timer_ = create_wall_timer(
       std::chrono::duration<double>(1.0 / target_rate_),
@@ -328,7 +333,11 @@ private:
       return;
     }
 
+    stop_requested_ = false;
     std::tie(response->success, response->message) = grasp();
+    // 止める要求はこの grasp 限り。残しておくと、次の open のゴールを
+    // move_gripper が自分で取り消してしまう（実機で open が失敗した）
+    stop_requested_ = false;
     busy_ = false;
 
     publish_status(response->message);
@@ -340,6 +349,39 @@ private:
     }
   }
 
+  // 把持（差し込み・閉じる・戻り）を止める。止めたあとはレモンや枝の近くに残るので、
+  // 戻すのは呼んだ側（/arm_home/go_home など）の責任
+  void stop_callback(Trigger::Response::SharedPtr response)
+  {
+    if (!busy_) {
+      response->success = true;
+      response->message = "not grasping";
+      return;
+    }
+
+    stop_requested_ = true;
+
+    // 差し込み・Servo の戻り: タイムアウトと同じ経路で PoseTracking を止める
+    if (mode_ != Mode::IDLE) {
+      tracker_->stopMotion();
+    }
+
+    // 閉じる・cartesian の戻り: 投げ終わったゴールを取り消す
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      if (arm_goal_) {
+        arm_client_->async_cancel_goal(arm_goal_);
+      }
+      if (gripper_goal_) {
+        gripper_client_->async_cancel_goal(gripper_goal_);
+      }
+    }
+
+    RCLCPP_WARN(get_logger(), "Stop requested");
+    response->success = true;
+    response->message = "stopping";
+  }
+
   void open_callback(Trigger::Response::SharedPtr response)
   {
     if (busy_.exchange(true)) {
@@ -347,6 +389,9 @@ private:
       response->message = "busy";
       return;
     }
+
+    // 前の grasp の止める要求を持ち越さない（open の最中に来た stop は効く）
+    stop_requested_ = false;
 
     response->success = move_gripper(gripper_open_);
     response->message = response->success ? "opened" : "failed to open gripper";
@@ -365,7 +410,11 @@ private:
     publish_status("opening");
 
     if (!move_gripper(gripper_open_)) {
-      return {false, "failed to open gripper"};
+      return {false, stop_requested_ ? "stopped (while opening)" : "failed to open gripper"};
+    }
+
+    if (stop_requested_) {
+      return {false, "stopped (while opening)"};
     }
 
     geometry_msgs::msg::TransformStamped ee;
@@ -387,6 +436,11 @@ private:
     publish_status("inserting");
     auto [inserted, insert_message] = servo_to(Mode::TRACK);
 
+    // 止められたら閉じない・戻らない（その場で止まるのが「止める」の意味）
+    if (stop_requested_) {
+      return {false, "stopped (while inserting)"};
+    }
+
     bool grasped = false;
     std::string message;
 
@@ -396,6 +450,11 @@ private:
       // Lemonを挟むと目標まで閉じきらずにabortされるので、結果は開き具合で判断する。
       // アクションは軌道の時間が過ぎると位置を見ずに終わるので、止まるまで待つ
       move_gripper(gripper_close_);
+
+      if (stop_requested_) {
+        return {false, "stopped (while closing)"};
+      }
+
       wait_gripper_settled();
 
       const double width = gripper_position();
@@ -414,8 +473,16 @@ private:
 
     // 行きの逆: 接近を始めた pregrasp まで戻る (把持していればここで引き抜く)。
     // 失敗時も戻しておかないと、Lemonや枝に近すぎて home への計画が通らない
+    if (stop_requested_) {
+      return {false, "stopped (before retreating)"};
+    }
+
     publish_status("retreating");
     auto [retreated, retreat_message] = retreat();
+
+    if (stop_requested_) {
+      return {false, "stopped (while retreating), " + message};
+    }
 
     if (!retreated) {
       return {false, message + ", retreat failed: " + retreat_message};
@@ -529,9 +596,25 @@ private:
       return {false, "arm goal rejected"};
     }
 
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      arm_goal_ = handle;
+    }
+    // 送っている間に stop が来ていたら、ここで取り消す
+    if (stop_requested_) {
+      arm_client_->async_cancel_goal(handle);
+    }
+
     auto result_future = arm_client_->async_get_result(handle);
 
-    if (!wait_future(result_future, duration + service_timeout_)) {
+    const bool arm_done = wait_future(result_future, duration + service_timeout_);
+
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      arm_goal_.reset();
+    }
+
+    if (!arm_done) {
       arm_client_->async_cancel_goal(handle);
       return {false, "arm result timed out"};
     }
@@ -584,7 +667,7 @@ private:
   {
     const Mode mode = mode_;
 
-    if (mode == Mode::IDLE) {
+    if (mode == Mode::IDLE || stop_requested_) {
       return;
     }
 
@@ -726,9 +809,23 @@ private:
       return false;
     }
 
-    auto result_future = gripper_client_->async_get_result(handle);
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      gripper_goal_ = handle;
+    }
+    if (stop_requested_) {
+      gripper_client_->async_cancel_goal(handle);
+    }
 
-    if (!wait_future(result_future, gripper_duration_ + service_timeout_)) {
+    auto result_future = gripper_client_->async_get_result(handle);
+    const bool gripper_done = wait_future(result_future, gripper_duration_ + service_timeout_);
+
+    {
+      std::lock_guard<std::mutex> lock(goal_mutex_);
+      gripper_goal_.reset();
+    }
+
+    if (!gripper_done) {
       RCLCPP_WARN(get_logger(), "Gripper result timed out");
       gripper_client_->async_cancel_goal(handle);
       return false;
@@ -915,6 +1012,7 @@ private:
   rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr apply_scene_client_;
   rclcpp::Service<Trigger>::SharedPtr grasp_srv_;
   rclcpp::Service<Trigger>::SharedPtr open_srv_;
+  rclcpp::Service<Trigger>::SharedPtr stop_srv_;
   rclcpp::TimerBase::SharedPtr target_timer_;
 
   moveit_servo::ServoParameters::SharedConstPtr servo_params_;
@@ -927,6 +1025,12 @@ private:
   std::atomic<bool> busy_{false};
   std::atomic<Mode> mode_{Mode::IDLE};
   std::atomic<bool> timed_out_{false};
+  std::atomic<bool> stop_requested_{false};  // ~/stop が呼ばれた（grasp の開始で消す）
+
+  // ~/stop から取り消せるように、実行中のゴールを持っておく
+  std::mutex goal_mutex_;
+  rclcpp_action::ClientGoalHandle<FollowJointTrajectory>::SharedPtr arm_goal_;
+  rclcpp_action::ClientGoalHandle<FollowJointTrajectory>::SharedPtr gripper_goal_;
   std::chrono::steady_clock::time_point deadline_;
   bool attached_ = false;
 
