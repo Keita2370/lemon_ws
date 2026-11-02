@@ -1,0 +1,78 @@
+# lemon_grasp_node 用の MoveIt Servo / PoseTracking の設定
+/**:
+  ros__parameters:
+    moveit_servo:
+      # 出力の軌道に同じ点を後ろの時刻にも複製して延ばす (Gazebo 用のオプション)。
+      # 次の指令が遅れても、JTC がその位置を保持し続けるようにする
+      use_gazebo: true
+
+      ## 入力 (PoseTracking が m/s, rad/s の Twist を出す)
+      command_in_type: "speed_units"
+      scale:
+        linear: 0.4
+        rotational: 0.8
+        joint: 0.5
+      cartesian_command_in_topic: ~/delta_twist_cmds
+      joint_command_in_topic: ~/delta_joint_cmds
+      # lemon_grasp_node 自身の ~/status (String) と重ならないように
+      status_topic: ~/servo_status
+
+      ## 出力 (lemon_grasp_node が時刻をずらして arm_controller (JTC) へ送る)
+      # Isaac Sim の /clock と /joint_states が 25 Hz なのでそれに合わせる
+      publish_period: 0.04
+      command_out_type: trajectory_msgs/JointTrajectory
+      command_out_topic: ~/servo_trajectory
+      publish_joint_positions: true
+      # use_gazebo で複製した点にも速度が残り、同じ位置の点の間をスプライン補間で
+      # 行き過ぎては戻って揺れるので、位置だけ送る
+      publish_joint_velocities: false
+      publish_joint_accelerations: false
+      smoothing_filter_plugin_name: "online_signal_smoothing::ButterworthFilterPlugin"
+
+      ## MoveIt
+      move_group_name: arm
+      planning_frame: base_link
+      joint_topic: /joint_states
+      # PoseTracking は robot_link_command_frame の姿勢を目標に合わせる
+      ee_frame_name: gripper_base
+      robot_link_command_frame: gripper_base
+
+      ## 停止
+      incoming_command_timeout: 0.1
+      num_outgoing_halt_msgs_to_publish: 4
+
+      ## 特異点・関節限界
+      # 条件数は並進 [m] と回転 [rad] が混ざるので小さいアームほど大きくなる。
+      # Piper は普通の姿勢でも 40 前後あり、Panda 用の既定値 (17 / 30) では
+      # 常に緊急停止と解除を繰り返して揺れる。手首特異点 (joint5=0) 付近は
+      # joint5=0.2 rad で約150、0.1 rad で約300
+      lower_singularity_threshold: 120.0
+      hard_stop_singularity_threshold: 300.0
+      leaving_singularity_threshold_multiplier: 2.0
+      joint_limit_margin: 0.1
+
+      ## 衝突チェック
+      # lemon_grasp_node はシーン (octomap) を監視しないので自己干渉のみ
+      check_collisions: true
+      collision_check_rate: 10.0
+      self_collision_proximity_threshold: 0.01
+      scene_collision_proximity_threshold: 0.02
+
+      ## PoseTracking の PID
+      # Servo は毎周期「計測した現在の関節角 + 1周期分の移動」を指令するので、
+      # 1周期で誤差の gain * publish_period だけ進む (遅延があっても 1 未満なら
+      # 振動しない)。1.5 だと 0.06 で、Isaac Sim の遅延ではほとんど進まない。
+      # 速度の上限は lemon_grasp_node の max_target_distance で抑える
+      windup_limit: 0.05
+      x_proportional_gain: 8.0
+      y_proportional_gain: 8.0
+      z_proportional_gain: 8.0
+      x_integral_gain: 0.0
+      y_integral_gain: 0.0
+      z_integral_gain: 0.0
+      x_derivative_gain: 0.0
+      y_derivative_gain: 0.0
+      z_derivative_gain: 0.0
+      angular_proportional_gain: 4.0
+      angular_integral_gain: 0.0
+      angular_derivative_gain: 0.0

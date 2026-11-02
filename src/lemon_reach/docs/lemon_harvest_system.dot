@@ -1,0 +1,99 @@
+// レモン収穫システムの構成図 (Service / topic / action の関係)
+// 生成: dot -Tpng -Gdpi=130 lemon_harvest_system.dot -o lemon_harvest_system.png
+//       dot -Tsvg lemon_harvest_system.dot -o lemon_harvest_system.svg
+digraph lemon_harvest {
+    graph [
+        rankdir=TB, fontname="Noto Sans CJK JP", fontsize=14,
+        nodesep=0.6, ranksep=0.8, newrank=true, bgcolor="white",
+        label="レモン収穫システム構成図\n青破線: Service (std_srvs/Trigger)   黒実線: topic   橙: action / MoveIt の Service",
+        labelloc=t
+    ];
+    node [shape=box, style="rounded,filled", fontname="Noto Sans CJK JP", fontsize=11, fillcolor="#ffffff"];
+    edge [fontname="Noto Sans CJK JP", fontsize=9];
+
+    // ---------------- lemon_yolo.launch.py ----------------
+    subgraph cluster_yolo {
+        label="lemon_yolo.launch.py";
+        style="rounded,filled"; fillcolor="#f3f8ee"; color="#86a870";
+
+        yolo    [label="yolo_ros\nyolo_node + detect_3d_node", fillcolor="#e1efd5"];
+        ellipse [label="lemon_ellipse_node\n(マスクに楕円フィット)", fillcolor="#e1efd5"];
+    }
+
+    // ---------------- lemon_harvest.launch.py ----------------
+    subgraph cluster_harvest {
+        label="lemon_harvest.launch.py";
+        style="rounded,filled"; fillcolor="#fdf6e8"; color="#c9a050";
+
+        manager [label="lemon_harvest_manager\n(シーケンサ, auto_run:=true のとき)\n\npub: ~/status", fillcolor="#fbe3b5", penwidth=2, ordering=out];
+
+        target [label=<
+            <b>lemon_target</b><br/>対象の選択・固定・追従<br/><br/>
+            <font color="#1f5fbf">srv: ~/release<br/>srv: ~/clear_exclusions</font>
+        >, fillcolor="#fff1d6"];
+        approach [label=<
+            <b>lemon_approach</b><br/>pregrasp へ移動 (直線挿入を IK で確認)<br/><br/>
+            <font color="#1f5fbf">srv: ~/approach</font>
+        >, fillcolor="#fff1d6"];
+        grasp [label=<
+            <b>lemon_grasp</b> (C++)<br/>MoveIt Servo で追従・把持・戻り<br/><br/>
+            <font color="#1f5fbf">srv: ~/grasp<br/>srv: ~/open</font>
+        >, fillcolor="#fff1d6"];
+        home [label=<
+            <b>arm_home</b><br/>起動時の姿勢を home として記録<br/><br/>
+            <font color="#1f5fbf">srv: ~/go_home<br/>srv: ~/set_home</font>
+        >, fillcolor="#fff1d6"];
+    }
+
+    // ---------------- piper_real_bringup.launch.py ----------------
+    // カメラも bringup で起動するが、図を見やすくするため YOLO の上に別に置く
+    camera [label="realsense2_camera\n/camera/camera\n(piper_real_bringup で起動)", fillcolor="#dbe7f3", color="#7a93ad"];
+
+    subgraph cluster_bringup {
+        label="piper_real_bringup.launch.py (実機) / Isaac Sim bringup";
+        labelloc=b;
+        style="rounded,filled"; fillcolor="#eef3f8"; color="#7a93ad";
+
+        movegroup [label="move_group\n(MoveIt)", fillcolor="#dbe7f3"];
+        arm_ctrl [label="arm_controller\n(JTC)", fillcolor="#dbe7f3"];
+        grip_ctrl [label="gripper_controller\n(JTC)", fillcolor="#dbe7f3"];
+        hw [label="ros2_control (topic_based) ⇄ piper_joint_bridge ⇄ piper_single_ctrl (CAN) ⇄ 実機 Piper", fillcolor="#dbe7f3"];
+    }
+
+    // ---------------- Service 呼び出し (manager → 各ノード) ----------------
+    edge [color="#1f5fbf", fontcolor="#1f5fbf", style=dashed, penwidth=1.6];
+    // ordering=out で、この順 (左から target, approach, grasp, home) に並べる
+    manager -> target   [label="⑤ /lemon_target/release"];
+    manager -> approach [label="① /lemon_approach/approach"];
+    manager -> grasp    [label="② /lemon_grasp/grasp\n④ /lemon_grasp/open"];
+    manager -> home     [label="③ /arm_home/go_home"];
+
+    // ---------------- topic ----------------
+    edge [color="#333333", fontcolor="#333333", style=solid, penwidth=1.0];
+    camera  -> yolo    [label="color/image_raw\naligned_depth_to_color"];
+    yolo    -> ellipse [label="/yolo/detections_3d"];
+    ellipse -> target  [label="/lemon_ellipse/lemons", constraint=false];
+    target  -> manager [label="/lemon_target/target\n(対象の固定を待つ)"];
+    target  -> approach [constraint=false, label="/lemon_target/target\n/lemon_target/short_axis"];
+    target  -> grasp   [constraint=false, label="/lemon_target/tracked"];
+    grasp   -> arm_ctrl [label="/arm_controller/joint_trajectory\n(Servo 出力)"];
+    arm_ctrl -> hw;
+    grip_ctrl -> hw;
+
+    // ---------------- action / MoveIt の Service ----------------
+    edge [color="#d07a1f", fontcolor="#b0630f", style=solid, penwidth=1.3];
+    approach -> movegroup [label="/compute_ik\n/plan_kinematic_path\n/execute_trajectory"];
+    home     -> movegroup [label="/plan_kinematic_path\n/execute_trajectory"];
+    grasp    -> movegroup [label="/apply_planning_scene\n(掴んだレモンの取り付け)"];
+    grasp    -> grip_ctrl [label="/gripper_controller/\nfollow_joint_trajectory"];
+    grasp    -> arm_ctrl  [label="/arm_controller/follow_joint_trajectory\n(cartesian の戻り)"];
+    movegroup -> arm_ctrl [label="follow_joint_trajectory"];
+
+    // 上から: manager / camera → 収穫ノード → MoveIt / コントローラ → 実機
+    { rank=same; manager; camera; }
+    { rank=same; ellipse; target; approach; grasp; home; }
+    { rank=same; movegroup; arm_ctrl; grip_ctrl; }
+    // 下段は左から gripper_controller, arm_controller, move_group
+    edge [style=invis];
+    grip_ctrl -> arm_ctrl;
+}

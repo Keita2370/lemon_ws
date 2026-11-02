@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>piper_isaacsim</name>
+  <version>0.0.0</version>
+  <description>
+    Bringup that lets MoveIt (piper_with_gripper_moveit) drive the Piper arm
+    running in Isaac Sim (go2_in_isaacsim), the same way piper_gazebo does for
+    Gazebo -- via topic_based_ros2_control bridged to Isaac Sim's
+    piper/joint_states + piper/joint_command topics instead of
+    gazebo_ros2_control.
+  </description>
+  <maintainer email="mhieda.robotics@gmail.com">hidayat</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <!-- ros2_control hardware interface that bridges to Isaac Sim's own
+       JointState topics; not on by default (ros-humble-topic-based-ros2-control). -->
+  <exec_depend>topic_based_ros2_control</exec_depend>
+  <exec_depend>piper_description</exec_depend>
+  <!-- Reuses piper_gazebo's joint8_ctrl.py gripper-mirror node as-is (it's
+       generic ROS2, not Gazebo-specific) instead of duplicating it. -->
+  <exec_depend>piper_gazebo</exec_depend>
+  <exec_depend>piper_with_gripper_moveit</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="piper">
+    <xacro:arg name="joint_states_topic" default="/piper/joint_states" />
+    <xacro:arg name="joint_commands_topic" default="/piper/joint_command" />
+
+    <!-- Same kinematic tree piper_gazebo and piper_with_gripper_moveit both
+         build on; only the ros2_control hardware plugin differs. -->
+    <xacro:include filename="$(find piper_description)/urdf/piper_description.xacro" />
+
+    <xacro:include filename="piper_isaacsim.ros2_control.xacro" />
+    <xacro:piper_isaacsim_ros2_control
+        name="IsaacSimSystem"
+        joint_states_topic="$(arg joint_states_topic)"
+        joint_commands_topic="$(arg joint_commands_topic)" />
+</robot>

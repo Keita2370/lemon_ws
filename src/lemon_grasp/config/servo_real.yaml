@@ -1,0 +1,12 @@
+# 実機 (piper_real) 用に servo.yaml を上書きする値 (servo.yaml の後に読み込む)
+/**:
+  ros__parameters:
+    moveit_servo:
+      ## PoseTracking の PID
+      # Isaac Sim の遅延に合わせた 8.0 は実機の初回には速すぎるので下げる。
+      # 指令速度の上限は (Pゲイン) * max_target_distance (lemon_harvest.launch.py)
+      # = 4.0 * 0.01 = 0.04 m/s
+      x_proportional_gain: 4.0
+      y_proportional_gain: 4.0
+      z_proportional_gain: 4.0
+      angular_proportional_gain: 2.0

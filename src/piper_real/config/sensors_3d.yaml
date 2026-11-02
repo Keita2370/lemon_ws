@@ -1,0 +1,13 @@
+# 手首の実機D435の点群をMoveItのOctoMapに入れる
+# (piper_with_gripper_moveit 同梱の sensors_3d.yaml は kinect 用の雛形のまま)
+sensors:
+  - realsense_pointcloud
+realsense_pointcloud:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  point_cloud_topic: /camera/camera/depth/color/points
+  max_range: 1.0
+  point_subsample: 2
+  padding_offset: 0.03
+  padding_scale: 1.0
+  max_update_rate: 1.0
+  filtered_cloud_topic: filtered_cloud
