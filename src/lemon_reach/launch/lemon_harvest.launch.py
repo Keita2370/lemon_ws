@@ -30,9 +30,12 @@ REAL_GRASP_PARAMS = {
 # move_group で動かす区間 (home ⇔ pregrasp) の速さ。joint_limits.yaml は
 # 速度 5 rad/s・加速度の制限なし (既定 1 rad/s^2) なので、
 # 0.2 → 1.0 rad/s, 0.3 → 0.3 rad/s^2 (sim の既定は 0.1 / 0.1)
+# 2026-11-11: 0.2 / 0.3 では実機が軌道に追いつけず、指令との差が 0.3 rad を超えて
+# piper_joint_bridge が指令を捨て (max_jump)、アームが途中で止まった
+# (認識姿勢の右⇔左は joint4 が約3 rad 回る)。半分に落とす
 REAL_MOVEIT_PARAMS = {
-    "velocity_scaling": 0.2,
-    "acceleration_scaling": 0.3,
+    "velocity_scaling": 0.1,
+    "acceleration_scaling": 0.15,
 }
 
 

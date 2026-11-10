@@ -48,3 +48,12 @@ lemon 収穫側の担当メンバーの了承を得て、UI（`Keita2370/piper_a
 | `lemon_harvest_manager_node.py` | 起動時に observe へ。把持に成功したら collect で離して observe へ戻る。失敗したら observe へ戻ってから開く |
 | `launch/lemon_harvest.launch.py`、`setup.py` | `config/harvest_sequence.yaml` を読む・入れる |
 | `docs/lemon_harvest_system.*` | 上の説明 |
+
+## 2026-11-11 の変更（実機の追従・速さ・カメラの取り付け値）
+
+| ファイル | 変更 |
+|---|---|
+| `src/lemon_reach/launch/lemon_harvest.launch.py` | 実機の MoveIt の速さを半分に（`velocity_scaling` 0.2 → 0.1、`acceleration_scaling` 0.3 → 0.15）。実機が軌道に追いつけず、piper_joint_bridge が指令を捨てて（max_jump 0.3 rad）認識姿勢が毎回ずれていた |
+| `src/piper_real/config/arm_controller_real.yaml`（新規） | 実機だけの JTC の許容。動いている間に 0.25 rad 以上ずれたら中断、終わりで 0.03 rad 以上離れていたら失敗。途中で止まったのに「着いた」扱いになるのを防ぐ |
+| `src/piper_real/launch/piper_real_bringup.launch.py` | 上の yaml を ros2_control_node に重ねて読む（Isaac Sim と共用の `ros2_controllers.yaml` は変えない） |
+| `src/piper_real/README.md` | カメラの取り付け値（実測・収穫できた値）と link6 の軸の向き、上の許容の説明 |

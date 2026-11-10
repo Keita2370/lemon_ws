@@ -41,6 +41,8 @@ def generate_launch_description():
     # (joint topic を引数で差し替えられるので実機でも同じものでよい)
     xacro_file = os.path.join(isaacsim_share, "config", "piper_isaacsim.urdf.xacro")
     controllers_yaml = os.path.join(isaacsim_share, "config", "ros2_controllers.yaml")
+    # 実機だけの arm_controller の設定 (到達の許容)。controllers_yaml の後に重ねる
+    arm_controller_real_yaml = os.path.join(pkg_share, "config", "arm_controller_real.yaml")
     sensors_yaml = os.path.join(pkg_share, "config", "sensors_3d.yaml")
 
     args = [
@@ -173,7 +175,7 @@ def generate_launch_description():
             package="controller_manager",
             executable="ros2_control_node",
             # controllers_yaml (piper_isaacsim と共用) の update_rate を上書き
-            parameters=[robot_description, controllers_yaml,
+            parameters=[robot_description, controllers_yaml, arm_controller_real_yaml,
                         {"update_rate": control_rate}],
             output="screen",
         )

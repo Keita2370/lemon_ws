@@ -1,0 +1,29 @@
+# 実機だけの arm_controller の設定 (piper_isaacsim の ros2_controllers.yaml に重ねて読む)。
+# Isaac Sim とは共用しない。
+#
+# 2026-11-11: 実機が軌道に追いつけずに piper_joint_bridge が指令を捨て (max_jump 0.3 rad)、
+# アームが途中で止まったのに、コントローラも MoveIt も「成功」を返していた
+# (到達の許容が無いと、軌道の時間が終わった時点で成功になる)。
+# そのため arm_home は止まった姿勢で「Reached observe_right」と言い、収穫可にしていた。
+# また止まったあとも遠い指令が残り、実機が近づくと急に動き出すおそれがあった。
+#
+#   trajectory: 動いている間、指令と実機の差がこれを超えたら中断して失敗を返す。
+#               ブリッジが捨てる 0.3 rad の手前にする。中断すると指令は今の位置に置き直される
+#   goal:       軌道の終わりに、目標とこれ以上離れていたら失敗
+#   goal_time:  軌道の終わりから goal に入るまで待つ時間 [s]
+#   stopped_velocity_tolerance: 0 で速度の判定をしない。実機の velocity は当てにならない
+#               (止まっていても 0.5 rad/s と出る) ので、判定すると毎回失敗になる
+#
+# 掛かるのはアクション (FollowJointTrajectory) で送った軌道だけ。lemon_grasp の Servo は
+# トピック (/arm_controller/joint_trajectory) で送るので掛からない。
+arm_controller:
+  ros__parameters:
+    constraints:
+      stopped_velocity_tolerance: 0.0
+      goal_time: 1.0
+      joint1: {trajectory: 0.25, goal: 0.03}
+      joint2: {trajectory: 0.25, goal: 0.03}
+      joint3: {trajectory: 0.25, goal: 0.03}
+      joint4: {trajectory: 0.25, goal: 0.03}
+      joint5: {trajectory: 0.25, goal: 0.03}
+      joint6: {trajectory: 0.25, goal: 0.03}

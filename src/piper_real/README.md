@@ -33,8 +33,9 @@ cd ~/lemon_ws && colcon build --symlink-install
 cd ~/piper_ros && bash can_activate.sh can0 1000000
 
 # 2. アーム + MoveIt + 手首カメラ
-ros2 launch piper_real piper_real_bringup.launch.py \
-    cam_x:=... cam_y:=... cam_z:=... cam_roll:=... cam_pitch:=... cam_yaw:=...
+# cam_* は 2026-11-11 に実測して、収穫できた値（下の「注意」）
+ros2 launch piper_real piper_real_bringup.launch.py use_rviz:=false \
+    cam_x:=-0.06 cam_y:=-0.04 cam_z:=0.04 cam_roll:=0.0 cam_pitch:=-1.2217 cam_yaw:=0.0
 
 # (ssh 越しなら use_rviz:=false にして、RViz は手元のPCで:
 #  ros2 launch piper_real piper_real_rviz.launch.py)
@@ -52,7 +53,15 @@ ros2 launch lemon_reach lemon_harvest.launch.py          # sim:=true で Isaac S
 - ssh の X11 転送で RViz を出すと起動に約50秒かかり操作もほぼ不能。
   手元のPCで `piper_real_rviz.launch.py` を使う (同じ LAN・同じ ROS_DOMAIN_ID)。
 
-- `cam_*` (link6 → camera_link) は **実測値を必ず入れる**。デフォルトは仮の 0。
-  RViz で TF と点群が実物と一致しているか確認する。
+- `cam_*` (link6 → camera_link) は **実測値を必ず入れる**。デフォルトは仮の 0
+  (まっすぐ前向き)。RViz で TF と点群が実物と一致しているか確認する。
+  - link6 の軸: +z = 前 (差し込む向き)、+x = 下、+y = 後ろから見て左
+  - 今の取り付け (2026-11-11 実測): 手首の上 6cm・右 4cm・前 4cm、前を見たまま 20° 下向き
+    → `cam_x:=-0.06 cam_y:=-0.04 cam_z:=0.04 cam_pitch:=-1.2217` (−90° + 20°)
+  - 既定値のままだとレモンの約 10cm 上を掴みにいった。高さだけずれるのは向き (pitch) が原因
+- 実機だけ、`config/arm_controller_real.yaml` で JTC の追従の許容を足している
+  (動いている間に指令と実機が 0.25 rad 以上ずれたら中断し、終わりで 0.03 rad 以上離れていたら失敗)。
+  piper_joint_bridge は今の位置から 0.3 rad より遠い指令を捨てるので、これが無いと
+  途中で止まったのに「着いた」扱いになる。Isaac Sim と共用の `ros2_controllers.yaml` は変えていない
 - 起動から5秒後にコントローラが有効化され、その時点の実機の姿勢が保持目標になる。
   piper のフィードバックが来ていないとブリッジが指令を捨てる (ログに出る)。
