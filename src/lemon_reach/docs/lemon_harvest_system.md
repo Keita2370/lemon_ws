@@ -11,7 +11,7 @@
 |---|---|---|
 | 1 | `piper_real piper_real_bringup.launch.py` (実機) / Isaac Sim 側の bringup | アーム・ros2_control・MoveIt (move_group)・手首カメラ・TF |
 | 2 | `lemon_reach lemon_yolo.launch.py` | YOLO によるレモン検出と3D化、楕円フィット (`/lemon_ellipse/lemons`) |
-| 3 | `lemon_reach lemon_harvest.launch.py` | 対象選択 → 接近 → 把持 → 帰還 のシーケンス (**本書の対象**) |
+| 3 | `lemon_reach lemon_harvest.launch.py` | 対象選択 → 接近 → 把持 → 認識姿勢へ帰還 のシーケンス (**本書の対象**) |
 
 ```bash
 # 実機の例
@@ -24,6 +24,17 @@ ros2 launch lemon_reach lemon_harvest.launch.py            # sim:=true で Isaac
 `lemon_harvest.launch.py` は YOLO を含まない。`/lemon_ellipse/lemons` が来ないと
 `lemon_target` が対象を選べず、シーケンスは `waiting_target` のまま止まる。
 
+`auto_run:=true` (既定) では、manager が起動時に一度 `/arm_home/go_observe` を呼んで
+認識姿勢へ移動し、そのまま収穫を始める (**launch するとアームが動く**)。
+
+`auto_run:=false` (UI 操作など) では起動直後は収穫できない。`/arm_home/harvest_enabled` は
+false で始まるので、先に認識姿勢へ移動する。`/arm_home/go_home` で畳んだ後の再開も同じ
+(auto_run:=true でも自動では再開しない):
+
+```bash
+ros2 service call /arm_home/go_observe std_srvs/srv/Trigger
+```
+
 ## 2. lemon_harvest.launch.py が起動するノード
 
 | ノード名 | パッケージ / 実行ファイル | 役割 | 提供する Service |
@@ -31,7 +42,7 @@ ros2 launch lemon_reach lemon_harvest.launch.py            # sim:=true で Isaac
 | `lemon_target` | lemon_reach / `lemon_target_node` | 安定して見えるレモンを1つ選んで固定し、位置・短辺の向きを配信 | `~/release`, `~/clear_exclusions`, `~/select` |
 | `lemon_approach` | lemon_reach / `lemon_approach_node` | 固定したレモンの手前 (pregrasp) へ MoveIt で移動 | `~/approach` |
 | `lemon_grasp` | lemon_grasp / `lemon_grasp_node` (C++) | MoveIt Servo で追従しながら指先を差し込み、掴んで pregrasp へ戻る | `~/grasp`, `~/open`, `~/stop` |
-| `arm_home` | lemon_reach / `arm_home_node` | 起動時の姿勢を home として記録し、そこへ戻す | `~/go_home`, `~/set_home` |
+| `arm_home` | lemon_reach / `arm_home_node` | home (犬移動時の畳んだ姿勢)・observe (認識姿勢)・collect (回収姿勢) へ移動し、収穫可否を配信 | `~/go_home`, `~/set_home`, `~/go_observe(_right/_left)`, `~/set_observe(_right/_left)`, `~/go_collect`, `~/set_collect` |
 | `lemon_harvest_manager` | lemon_reach / `lemon_harvest_manager_node` | 上の Service を順に呼ぶシーケンサ (`auto_run:=false` で起動しない) | — |
 
 ## 3. データの流れ
@@ -62,7 +73,9 @@ flowchart LR
 
     mgr -. /lemon_approach/approach .-> app
     mgr -. /lemon_grasp/grasp, open .-> grs
-    mgr -. /arm_home/go_home .-> home[arm_home]
+    mgr -. /arm_home/go_collect, go_observe .-> home[arm_home]
+    home -- /arm_home/harvest_enabled --> tgt
+    home -- /arm_home/harvest_enabled --> app
     mgr -. /lemon_target/release .-> tgt
 
     app -- /plan_kinematic_path<br/>/compute_ik<br/>/execute_trajectory --> mg[move_group]
@@ -86,6 +99,7 @@ flowchart LR
 | `/lemon_target/target` | `geometry_msgs/PointStamped` (latched) | lemon_target | 固定した対象の位置 (base_link)。`frame_id` が空なら「対象なし」 |
 | `/lemon_target/tracked` | `geometry_msgs/PointStamped` (latched) | lemon_target | 固定中も検出で更新し続ける位置 (grasp はこちらへ向かう) |
 | `/lemon_target/short_axis` | `geometry_msgs/Vector3Stamped` (latched) | lemon_target | 楕円の短辺 = グリッパで挟む向き (base_link)。ゼロなら不定 |
+| `/arm_home/harvest_enabled` | `std_msgs/Bool` (latched) | arm_home | 収穫してよいか。起動時 false、`~/go_observe` 成功で true、`~/go_home` で false |
 | `/lemon_harvest_manager/status` | `std_msgs/String` | manager | シーケンスの状態 |
 | `/lemon_approach/status`, `/lemon_grasp/status` | `std_msgs/String` | 各ノード | 各ノードの状態 |
 
@@ -105,17 +119,30 @@ flowchart TD
     W[waiting_target<br/>/lemon_target/target を待つ] --> A[approaching<br/>/lemon_approach/approach]
     A -- 成功 --> G[grasping<br/>/lemon_grasp/grasp]
     A -- 失敗 --> H
-    G --> H[going_home<br/>/arm_home/go_home]
+    G -- 失敗 --> H[going_home<br/>/arm_home/go_observe]
+    G -- 成功 --> C[going_home<br/>/arm_home/go_collect]
+    C -- 失敗 --> E
+    C -- 成功 --> CO[opening<br/>/lemon_grasp/open]
+    CO --> H2[going_home<br/>/arm_home/go_observe]
+    H2 -- 失敗 --> E
+    H2 -- 成功 --> R
     H -- 失敗 --> E[error: 停止]
     H -- 成功 --> O[opening<br/>/lemon_grasp/open]
     O --> R[releasing<br/>/lemon_target/release]
     R --> W
 ```
 
-- approach / grasp が失敗しても home へ戻り、グリッパは常に開く (閉じたままにしない)。
+- 把持に成功したら **回収姿勢** (`/arm_home/go_collect`) へ運んでグリッパを開き、認識姿勢
+  (`/arm_home/go_observe`) へ戻る。回収姿勢へ行けなければレモンを持ったまま error で停止する。
+  (UI の収穫位置①②③は manager からは使わない)
+- approach / grasp が失敗したら回収姿勢へは行かず、認識姿勢へ戻ってからグリッパを開く (閉じたままにしない)。
+- 移動中の status は UI に合わせて従来の `going_home` のまま (回収姿勢・認識姿勢のどちらへ動くときも)。
 - release で、その位置は除外リストに入り再選択されない (掴めた・掴めなかったに関わらず)。
   除外を消すには `/lemon_target/clear_exclusions`。
-- home へ戻れないときだけシーケンス全体を止める (home の視野で次の対象を選ぶため)。
+- 認識姿勢へ戻れないときだけシーケンス全体を止める (認識姿勢の視野で次の対象を選ぶため)。
+- 起動時に一度 `/arm_home/go_observe` を呼ぶ。失敗したら `waiting_target` のまま待つ (手で呼べば始まる)。
+- home (`/arm_home/go_home`) の間は `harvest_enabled` が false で lemon_target が対象を固定しないので、
+  manager は `waiting_target` のまま待つ。`/arm_home/go_observe` を呼ぶと再開する。
 - 各 Service 呼び出しのタイムアウトは `call_timeout` (120 s)。
 
 `auto_run:=false` では manager を起動しないので、同じ順に手で呼んで1段ずつ確かめられる。
@@ -123,8 +150,9 @@ flowchart TD
 ```bash
 ros2 service call /lemon_approach/approach std_srvs/srv/Trigger
 ros2 service call /lemon_grasp/grasp       std_srvs/srv/Trigger
-ros2 service call /arm_home/go_home        std_srvs/srv/Trigger
+ros2 service call /arm_home/go_collect     std_srvs/srv/Trigger
 ros2 service call /lemon_grasp/open        std_srvs/srv/Trigger
+ros2 service call /arm_home/go_observe     std_srvs/srv/Trigger
 ros2 service call /lemon_target/release    std_srvs/srv/Trigger
 ```
 
@@ -150,6 +178,13 @@ ros2 service call /lemon_target/release    std_srvs/srv/Trigger
 - `~/select` はどちらのモードでも使える。**固定中は断る** (把持中に対象が入れ替わると
   危ないため。先に `~/release`)。安定した候補が無いときは理由を返す
   (観測が 3 s 未満 / フレーム不足 / 映っている割合が `min_detection_ratio` 未満)。
+
+`/arm_home/harvest_enabled` が false の間 (アームが home。手先カメラにレモンが映らない):
+
+- auto でも対象を固定しない (候補も集めない。true になってから `window_sec` 数え直す)。
+- `~/select` は `harvest is disabled (arm is at home)` で失敗する。
+- false に切り替わった時点で固定中の対象を解除し (`~/target` などに「対象なし」を配信)、
+  除外リストも消す (犬が動いて場所が変わるため)。
 
 ```bash
 ros2 service call /lemon_target/select lemon_msgs/srv/SelectTarget \
@@ -177,6 +212,9 @@ ros2 service call /lemon_target/select lemon_msgs/srv/SelectTarget \
    IK 解なし / 関節限界 (`joint_limit_margin` 0.15 rad) / 解の飛び (`max_joint_step`) /
    特異点 (ヤコビアン条件数 > `max_condition` 100。Servo は 120 から減速するため)。
 4. 見つかった関節角を目標に move_group で計画・実行する。
+
+`/arm_home/harvest_enabled` が false の間は `~/approach` を
+`harvest is disabled (arm is at home)` で断り、アームは動かさない。
 
 ee_link は `gripper_base`、指先は ee_link の z 方向 `tcp_offset` (0.136 m)。
 
@@ -206,7 +244,7 @@ move_group の軌道実行と指令がぶつからないようにしている。
 タイムアウトと同じ経路 (`stopMotion`) で止め、閉じている最中・cartesian の戻りの最中は
 グリッパ / アームの JTC のゴールを取り消す。止めたら閉じる・戻る段は飛ばし、`~/grasp` は
 `success=false, message="stopped (while ...)"` を返す。**アームはレモンや枝の近くに残る**ので、
-戻すのは呼んだ側 (`/arm_home/go_home` など)。把持していないときは何もせず成功を返す。
+戻すのは呼んだ側 (`/arm_home/go_observe` など)。把持していないときは何もせず成功を返す。
 
 Servo の設定は `lemon_grasp/config/servo.yaml` (実機では `servo_real.yaml` で上書き)。
 planning_frame は `base_link`、出力は `~/servo_trajectory` を経由して
@@ -214,10 +252,47 @@ planning_frame は `base_link`、出力は `~/servo_trajectory` を経由して
 
 ### arm_home (`lemon_reach/arm_home_node.py`)
 
-起動後、move_group から関節角が取れた時点の姿勢を home として記録する
-(取れるまで 1 s ごとに再試行)。`~/go_home` でそこへ計画・実行、`~/set_home` で記録し直す。
-**`lemon_harvest.launch.py` を起動したときの姿勢が home になる**ので、
-レモン全体が見える姿勢にしてから起動する。
+関節角は `config/harvest_sequence.yaml` で与える (joint1〜joint6 [rad]、必ず小数で書く)。
+
+| 姿勢 | 意味 | YAML | 移動 | 記録 |
+|---|---|---|---|---|
+| home | 犬 (Go2) が移動するときの畳んだ姿勢。収穫の動作では使わない | `home_joint_positions` | `~/go_home` | `~/set_home` |
+| observe (右) | レモン認識姿勢 (手先カメラが作業範囲を向く)。収穫の合間に戻る | `observe_right_joint_positions` | `~/go_observe_right` | `~/set_observe_right` |
+| observe (左) | 同上 (左側) | `observe_left_joint_positions` | `~/go_observe_left` | `~/set_observe_left` |
+| collect | レモン回収姿勢。auto_run でここでグリッパを開いてレモンを離す | `collect_joint_positions` | `~/go_collect` | `~/set_collect` |
+
+- home は YAML になければ、従来どおり起動後に move_group から関節角が取れた時点の姿勢を記録する
+  (取れるまで 1 s ごとに再試行)。
+- 認識姿勢は右と左の2つ。arm_home は **今の向き** (`~/observe_side`, `std_msgs/String` latched、
+  起動時は `observe_side` パラメータ、既定 `right`) を覚えている。
+  - `~/go_observe_right` / `~/go_observe_left`: 向きを切り替えて、その認識姿勢へ移動する。
+  - `~/go_observe`: 今の向きの認識姿勢へ移動する。manager はこれしか呼ばないので、
+    auto_run で収穫する側は **人が `go_observe_right` / `go_observe_left` で切り替える**。
+  - `~/set_observe`: 今の向きの認識姿勢を記録し直す。
+- 未設定の側へは行けない (`observe_left is not set` などで失敗し、アームは動かず向きも変わらない)。
+- `~/set_observe(_right/_left)` / `~/set_collect` は現在の関節角を `observe_right_joint_positions: [...]` /
+  `collect_joint_positions: [...]` (小数4桁) の形でログに出す (YAML にそのまま貼れる)。
+  記録した姿勢は arm_home を再起動するまで有効。
+- `~/go_collect` は `harvest_enabled` を変えない (収穫の途中なので。false にすると対象と除外リストが消える)。
+- どちらも move_group で関節角を目標に計画・実行する (移動中に別の移動を呼ぶと `busy`)。
+
+`~/harvest_enabled` (`std_msgs/Bool`, latched) で収穫してよいかを配信する。
+
+| 出来事 | harvest_enabled |
+|---|---|
+| 起動時 | false |
+| `~/go_observe(_right/_left)` 成功 | true |
+| `~/go_observe(_right/_left)` が動いて失敗 | false |
+| 未設定・`busy` で動かなかった | 変えない |
+| `~/go_home` が呼ばれた (移動を始める前) | false (失敗しても false のまま) |
+
+### UI (piper_arm_ui) との関係
+
+- UI の「ホームへ戻す」(`/arm_home/go_home`) は、犬移動時の姿勢へ畳む動作になる。
+- 収穫の合間に戻る先は `/arm_home/go_observe` (今の向きの認識姿勢)。左右の切り替えは
+  `/arm_home/go_observe_right` / `go_observe_left`。今の向きは `/arm_home/observe_side`。
+- UI は `/arm_home/harvest_enabled` を購読すれば、home の間に収穫ボタンを無効にできる。
+- home の間に UI から `/lemon_target/select`・`/lemon_approach/approach` を呼ぶと失敗が返る。
 
 ## 6. launch 引数
 
@@ -248,5 +323,8 @@ planning_frame は `base_link`、出力は `~/servo_trajectory` を経由して
 - **カメラの TF (`cam_*`) は実測値を入れる。** lemon_target は TF でレモンの位置を
   base_link に変換するので、仮の値 (0) のままだと狙う位置がずれる。
 - 最初は `auto_run:=false` で1段ずつ確かめるのが安全。
+- 起動直後は `harvest_enabled` が false。`/arm_home/go_observe` を呼ぶまで対象は固定されない。
+- `lemon_grasp` は `harvest_enabled` を見ない。把持中に `/arm_home/go_home` を呼ぶと対象は解除されるが、
+  把持の動作そのものは止まらないことがある。先に `/lemon_grasp/stop` を呼ぶ。
 - 状態の確認: `ros2 topic echo /lemon_harvest_manager/status`、
   検出の確認: `/lemon_ellipse/dbg_image`、RViz では `lemon_target` / `lemon_pregrasp` の TF と `/lemon_ellipse/markers`。

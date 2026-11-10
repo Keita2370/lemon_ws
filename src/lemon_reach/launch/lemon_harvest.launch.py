@@ -80,6 +80,12 @@ def generate_launch_description():
         )
         servo_yamls = [os.path.join(grasp_config, "servo.yaml")]
 
+        # 収穫シーケンスの設定 (home・認識姿勢)
+        sequence_yaml = os.path.join(
+            get_package_share_directory("lemon_reach"),
+            "config", "harvest_sequence.yaml"
+        )
+
         if not sim:
             target_params.append(REAL_TARGET_PARAMS)
             params.append(REAL_MOVEIT_PARAMS)
@@ -119,13 +125,13 @@ def generate_launch_description():
             Node(
                 package="lemon_reach",
                 executable="arm_home_node",
-                parameters=params,
+                parameters=[*params, sequence_yaml],
                 output="screen",
             ),
             Node(
                 package="lemon_reach",
                 executable="lemon_harvest_manager_node",
-                parameters=params,
+                parameters=[*params, sequence_yaml],
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("auto_run")),
             ),

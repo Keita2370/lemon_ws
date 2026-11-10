@@ -33,3 +33,18 @@ lemon 収穫側の担当メンバーの了承を得て、UI（`Keita2370/piper_a
 
 実機で確認済み（`~/stop` は差し込み中に呼んで 0.04 s で返り、目視でもすぐ止まった。
 `~/select` は位置の指定・遠い位置・固定中の拒否・除外リストの無視を確認）。
+
+## 2026-11-10 にミニPCで加えられた変更（home / 認識姿勢 / 回収姿勢）
+
+ミニPCの `~/lemon_ws/src/lemon_reach` に直接加えられた変更を、そのまま記録したもの
+（ファイルの日付は 2026-11-10 18:49。`config/` のインストールは 2026-11-05）。
+
+| ファイル | 変更 |
+|---|---|
+| `config/harvest_sequence.yaml`（新規） | home・observe（右／左）・collect の関節角 |
+| `arm_home_node.py` | home = 犬（Go2）が移動するときの畳んだ姿勢。observe（レモン認識姿勢、右／左）と collect（回収姿勢）を追加。`~/go_observe(_right/_left)`、`~/set_observe(_right/_left)`、`~/go_collect`、`~/set_collect`。`~/harvest_enabled`（Bool、latched）と `~/observe_side`（String、latched）を配信 |
+| `lemon_target_node.py` | `harvest_enabled` が false の間は対象を選ばず、`~/select` を断る。false になったら対象を解除し、除外リストを消す |
+| `lemon_approach_node.py` | `harvest_enabled` が false の間は `~/approach` を断る |
+| `lemon_harvest_manager_node.py` | 起動時に observe へ。把持に成功したら collect で離して observe へ戻る。失敗したら observe へ戻ってから開く |
+| `launch/lemon_harvest.launch.py`、`setup.py` | `config/harvest_sequence.yaml` を読む・入れる |
+| `docs/lemon_harvest_system.*` | 上の説明 |

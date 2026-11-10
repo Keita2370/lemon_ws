@@ -5,7 +5,7 @@ digraph lemon_harvest {
     graph [
         rankdir=TB, fontname="Noto Sans CJK JP", fontsize=14,
         nodesep=0.6, ranksep=0.8, newrank=true, bgcolor="white",
-        label="レモン収穫システム構成図\n青破線: Service (std_srvs/Trigger)   黒実線: topic   橙: action / MoveIt の Service",
+        label="レモン収穫システム構成図\n青破線: Service (std_srvs/Trigger)   黒実線: topic   橙: action / MoveIt の Service   赤: 収穫可否 (harvest_enabled)",
         labelloc=t
     ];
     node [shape=box, style="rounded,filled", fontname="Noto Sans CJK JP", fontsize=11, fillcolor="#ffffff"];
@@ -29,19 +29,22 @@ digraph lemon_harvest {
 
         target [label=<
             <b>lemon_target</b><br/>対象の選択・固定・追従<br/><br/>
-            <font color="#1f5fbf">srv: ~/release<br/>srv: ~/clear_exclusions</font>
+            <font color="#1f5fbf">srv: ~/release<br/>srv: ~/clear_exclusions<br/>srv: ~/select</font><br/>
+            <font color="#a03030">harvest_enabled=false の間は固定しない</font>
         >, fillcolor="#fff1d6"];
         approach [label=<
             <b>lemon_approach</b><br/>pregrasp へ移動 (直線挿入を IK で確認)<br/><br/>
-            <font color="#1f5fbf">srv: ~/approach</font>
+            <font color="#1f5fbf">srv: ~/approach</font><br/>
+            <font color="#a03030">harvest_enabled=false の間は断る</font>
         >, fillcolor="#fff1d6"];
         grasp [label=<
             <b>lemon_grasp</b> (C++)<br/>MoveIt Servo で追従・把持・戻り<br/><br/>
             <font color="#1f5fbf">srv: ~/grasp<br/>srv: ~/open</font>
         >, fillcolor="#fff1d6"];
         home [label=<
-            <b>arm_home</b><br/>起動時の姿勢を home として記録<br/><br/>
-            <font color="#1f5fbf">srv: ~/go_home<br/>srv: ~/set_home</font>
+            <b>arm_home</b><br/>home: 犬移動時の畳んだ姿勢<br/>observe: レモン認識姿勢 (右 / 左)<br/>collect: レモン回収姿勢<br/><br/>
+            <font color="#1f5fbf">srv: ~/go_home<br/>srv: ~/set_home<br/>srv: ~/go_observe(_right/_left)<br/>srv: ~/set_observe(_right/_left)<br/>srv: ~/go_collect<br/>srv: ~/set_collect</font><br/>
+            pub: ~/harvest_enabled, ~/observe_side
         >, fillcolor="#fff1d6"];
     }
 
@@ -63,10 +66,10 @@ digraph lemon_harvest {
     // ---------------- Service 呼び出し (manager → 各ノード) ----------------
     edge [color="#1f5fbf", fontcolor="#1f5fbf", style=dashed, penwidth=1.6];
     // ordering=out で、この順 (左から target, approach, grasp, home) に並べる
-    manager -> target   [label="⑤ /lemon_target/release"];
+    manager -> target   [label="⑥ /lemon_target/release"];
     manager -> approach [label="① /lemon_approach/approach"];
     manager -> grasp    [label="② /lemon_grasp/grasp\n④ /lemon_grasp/open"];
-    manager -> home     [label="③ /arm_home/go_home"];
+    manager -> home     [label="③ /arm_home/go_collect\n⑤ /arm_home/go_observe"];
 
     // ---------------- topic ----------------
     edge [color="#333333", fontcolor="#333333", style=solid, penwidth=1.0];
@@ -76,6 +79,10 @@ digraph lemon_harvest {
     target  -> manager [label="/lemon_target/target\n(対象の固定を待つ)"];
     target  -> approach [constraint=false, label="/lemon_target/target\n/lemon_target/short_axis"];
     target  -> grasp   [constraint=false, label="/lemon_target/tracked"];
+    home    -> target  [constraint=false, color="#a03030", fontcolor="#a03030",
+                        label="/arm_home/harvest_enabled\n(Bool, latched)"];
+    home    -> approach [constraint=false, color="#a03030", fontcolor="#a03030",
+                        label="/arm_home/harvest_enabled"];
     grasp   -> arm_ctrl [label="/arm_controller/joint_trajectory\n(Servo 出力)"];
     arm_ctrl -> hw;
     grip_ctrl -> hw;

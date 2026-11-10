@@ -1,0 +1,38 @@
+# レモン収穫シーケンスの設定
+# 置き場所: lemon_reach/config/harvest_sequence.yaml
+#
+# 関節角の単位は [rad]、並びは joint1, joint2, joint3, joint4, joint5, joint6。
+# 値は必ず小数で書く (0 ではなく 0.0)。整数が混ざると型が合わず起動時にエラーになる。
+# 現在の姿勢の値は、アームを動かしてから次を呼ぶと arm_home のログに出る。
+#   ros2 service call /arm_home/set_observe_right std_srvs/srv/Trigger
+#     → observe_right_joint_positions: [...] (このファイルにそのまま貼れる形。left も同様)
+#   ros2 service call /arm_home/set_collect std_srvs/srv/Trigger
+#     → collect_joint_positions: [...] (このファイルにそのまま貼れる形)
+#   ros2 service call /arm_home/set_home    std_srvs/srv/Trigger
+#     → Home recorded: joint1=..., joint2=..., ... (値を順に写す)
+
+arm_home:
+  ros__parameters:
+    # 関節角の許容誤差 [rad] (既定値と同じ)
+    joint_tolerance: 0.01
+
+    # home: 犬 (Go2) が移動するときの畳んだ姿勢 (/arm_home/go_home)。
+    # 手先カメラにレモンが映らないので、home の間は収穫操作を断る
+    # (/arm_home/harvest_enabled = false)。
+    # コメントのままなら、従来どおり起動時の姿勢を home にする
+    home_joint_positions: [0.0000, 0.0302, -0.0775, 0.0000, 0.5541, 0.0000]
+
+    # observe: レモン認識姿勢 (手先カメラが作業範囲を向く)。右と左の2つ。
+    #   /arm_home/go_observe_right, go_observe_left: その向きにして移動する
+    #   /arm_home/go_observe: 今の向きへ移動する (auto_run の manager もこれで戻る)
+    # 着いたら harvest_enabled = true。起動時の向きは observe_side (right / left)。
+    # コメントのままの側へは行けない ("observe_left is not set" などで失敗する)
+    observe_side: "right"
+    observe_right_joint_positions: [-0.3042, 0.5081, -0.6425, -1.6293, 1.2186, 0.8137]
+    observe_left_joint_positions: [0.5167, 0.4375, -0.7556, 1.5163, 1.0100, -1.2850]
+
+    # collect: レモン回収姿勢 (auto_run で把持に成功したらここでグリッパを開いて離し、
+    # そのあと observe へ戻る。/arm_home/go_collect)。
+    # コメントのままだと /arm_home/go_collect は "collect is not set" で失敗し、
+    # manager はレモンを持ったまま error で停止する
+    collect_joint_positions: [1.5565, 1.2502, -0.3460, 0.0996, 0.5350, -0.6512]

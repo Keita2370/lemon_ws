@@ -15,7 +15,7 @@ from rclpy.time import Time
 import tf2_ros
 from geometry_msgs.msg import PointStamped, TransformStamped, Vector3Stamped
 from moveit_msgs.msg import Constraints, JointConstraint
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 from lemon_reach.kinematics import Chain
@@ -113,6 +113,9 @@ class LemonApproach(Node):
 
     ~/approach (Trigger) で計画・実行し、結果を返す。解除や次の対象への
     切り替えは上位 (lemon_harvest_manager_node など) に任せる。
+
+    /arm_home/harvest_enabled (std_msgs/Bool, latched) が false の間 (アームが home)
+    は ~/approach を断り、アームは動かさない。
     """
 
     def __init__(self):
@@ -206,6 +209,8 @@ class LemonApproach(Node):
         self.pregrasp = None    # TransformStamped
         self.grasp_frame = None  # TransformStamped
         self.busy = False
+        # /arm_home/harvest_enabled が届くまでは収穫しない
+        self.harvest_enabled = False
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -241,6 +246,14 @@ class LemonApproach(Node):
             callback_group=self.cb_group
         )
 
+        self.create_subscription(
+            Bool,
+            "/arm_home/harvest_enabled",
+            self.harvest_enabled_callback,
+            latched,
+            callback_group=self.cb_group
+        )
+
         self.create_service(
             Trigger, "~/approach", self.approach_callback,
             callback_group=self.cb_group
@@ -262,6 +275,9 @@ class LemonApproach(Node):
             return
 
         self.target = msg
+
+    def harvest_enabled_callback(self, msg):
+        self.harvest_enabled = bool(msg.data)
 
     def short_axis_callback(self, msg):
 
@@ -660,6 +676,12 @@ class LemonApproach(Node):
         if self.busy:
             response.success = False
             response.message = "busy"
+            return response
+
+        if not self.harvest_enabled:
+            response.success = False
+            response.message = "harvest is disabled (arm is at home)"
+            self.publish_status(response.message)
             return response
 
         if self.target is None:

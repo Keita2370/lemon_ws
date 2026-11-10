@@ -20,10 +20,25 @@ class LemonHarvestManager(Node):
         対象が固定されるのを待つ
         → /lemon_approach/approach  (固定位置をもとにLemon手前 (pregrasp) へ移動)
         → /lemon_grasp/grasp        (Servoで追従しながら掴み、pregraspへ戻る)
-        → /arm_home/go_home         (起動時の姿勢へ戻る)
+        → /arm_home/go_collect      (Lemon回収姿勢へ移動)
         → /lemon_grasp/open         (グリッパを開いてLemonを離す)
-        → /lemon_target/release     (対象を解除。home姿勢の視野で次の対象を選び直す)
+        → /arm_home/go_observe      (認識姿勢へ戻る。右/左は arm_home の今の向き。
+                                     人が go_observe_right / go_observe_left で切り替える)
+        → /lemon_target/release     (対象を解除。認識姿勢の視野で次の対象を選び直す)
         → 繰り返し
+
+    approach / grasp に失敗した場合 (Lemonを持っていない) は回収姿勢へは行かず、
+        → /arm_home/go_observe → /lemon_grasp/open → /lemon_target/release → 繰り返し
+
+    起動時に一度 /arm_home/go_observe を呼んで認識姿勢へ行く (harvest_enabled が true に
+    なり、対象の選択が始まる)。失敗したら waiting_target のまま待つので、
+    手で /arm_home/go_observe を呼べば始まる。
+
+    home (/arm_home/go_home) は犬が移動するときの畳んだ姿勢で、ここでは使わない。
+    home の間は /arm_home/harvest_enabled が false で lemon_target が対象を固定しないので、
+    waiting_target のまま待つ (go_home の後は自動では再開しない。手で go_observe を呼ぶ)。
+    status は UI が既存の文字列で表示を分けているので変えない
+    (回収姿勢・認識姿勢へ動く間も going_home)。
     """
 
     def __init__(self):
@@ -43,11 +58,14 @@ class LemonHarvestManager(Node):
         self.grasp_client = self.create_client(
             Trigger, "/lemon_grasp/grasp", callback_group=self.cb_group
         )
+        self.collect_client = self.create_client(
+            Trigger, "/arm_home/go_collect", callback_group=self.cb_group
+        )
         self.open_client = self.create_client(
             Trigger, "/lemon_grasp/open", callback_group=self.cb_group
         )
-        self.home_client = self.create_client(
-            Trigger, "/arm_home/go_home", callback_group=self.cb_group
+        self.observe_client = self.create_client(
+            Trigger, "/arm_home/go_observe", callback_group=self.cb_group
         )
         self.release_client = self.create_client(
             Trigger, "/lemon_target/release", callback_group=self.cb_group
@@ -85,6 +103,8 @@ class LemonHarvestManager(Node):
 
     def run(self):
 
+        self.go_observe_on_startup()
+
         while rclpy.ok():
 
             self.publish_status("waiting_target")
@@ -97,6 +117,8 @@ class LemonHarvestManager(Node):
                 f"Target ({p.x:.3f}, {p.y:.3f}, {p.z:.3f})"
             )
 
+            grasped = False
+
             self.publish_status("approaching")
             ok, message = self.call(self.approach_client)
 
@@ -106,29 +128,50 @@ class LemonHarvestManager(Node):
 
                 if ok:
                     self.get_logger().info("Grasped")
+                    grasped = True
                 else:
                     self.get_logger().warn(f"Grasp failed: {message}")
 
             else:
                 self.get_logger().warn(f"Approach failed: {message}")
 
+            if grasped:
+                # 回収姿勢へ運んでLemonを離す
+                self.publish_status("going_home")
+                ok, message = self.call(self.collect_client)
+
+                if not ok:
+                    # Lemonを持ったまま動けないので、開かずに停止する
+                    self.get_logger().error(
+                        f"Go collect failed: {message}. Stopping sequence"
+                    )
+                    self.publish_status("error")
+                    return
+
+                self.publish_status("opening")
+                ok, message = self.call(self.open_client)
+
+                if not ok:
+                    self.get_logger().warn(f"Open gripper failed: {message}")
+
             self.publish_status("going_home")
-            ok, message = self.call(self.home_client)
+            ok, message = self.call(self.observe_client)
 
             if not ok:
-                # homeに戻れないと次の対象を正しく選べないので停止する
+                # 認識姿勢に戻れないと次の対象を正しく選べないので停止する
                 self.get_logger().error(
-                    f"Go home failed: {message}. Stopping sequence"
+                    f"Go observe failed: {message}. Stopping sequence"
                 )
                 self.publish_status("error")
                 return
 
-            # 把持に失敗していても閉じたままにしないよう常に開く
-            self.publish_status("opening")
-            ok, message = self.call(self.open_client)
+            if not grasped:
+                # 把持に失敗していても閉じたままにしないよう開く
+                self.publish_status("opening")
+                ok, message = self.call(self.open_client)
 
-            if not ok:
-                self.get_logger().warn(f"Open gripper failed: {message}")
+                if not ok:
+                    self.get_logger().warn(f"Open gripper failed: {message}")
 
             self.publish_status("releasing")
             self.target_event.clear()
@@ -136,6 +179,23 @@ class LemonHarvestManager(Node):
 
             if not ok:
                 self.get_logger().warn(f"Release failed: {message}")
+
+    def go_observe_on_startup(self):
+
+        # arm_home が起動するまで待つ
+        while rclpy.ok() and not self.observe_client.wait_for_service(timeout_sec=1.0):
+            self.publish_status("waiting_target")
+
+        self.publish_status("going_home")
+        ok, message = self.call(self.observe_client)
+
+        if ok:
+            self.get_logger().info("Reached observe on startup")
+        else:
+            self.get_logger().error(
+                f"Go observe on startup failed: {message}. "
+                "Call /arm_home/go_observe to start"
+            )
 
     def call(self, client):
 

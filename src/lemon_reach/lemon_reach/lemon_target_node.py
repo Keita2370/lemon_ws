@@ -16,6 +16,7 @@ from tf2_ros import TransformException
 from geometry_msgs.msg import PointStamped, TransformStamped, Vector3Stamped
 from lemon_msgs.msg import LemonEllipseArray
 from lemon_msgs.srv import SelectTarget
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 
@@ -52,6 +53,11 @@ class LemonTarget(Node):
                 人が選ぶので除外リストでは候補を外さない
         ~/select はどちらのモードでも使える。固定中は断る (把持中に対象が
         入れ替わると危ないため。先に ~/release する)
+
+    /arm_home/harvest_enabled (std_msgs/Bool, latched) が false の間 (アームが home。
+    手先カメラなのでレモンが映らない) は収穫操作を断る:
+        auto でも対象を固定しない、~/select は失敗を返す。
+        false に切り替わったら固定中の対象を解除し、除外リストも消す (場所が変わるため)
     """
 
     def __init__(self):
@@ -138,6 +144,9 @@ class LemonTarget(Node):
         # 撮影時刻のTFを待っている検出 (古い順)
         self.pending = deque()
 
+        # /arm_home/harvest_enabled が届くまでは収穫しない
+        self.harvest_enabled = False
+
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -163,6 +172,13 @@ class LemonTarget(Node):
         self.create_service(SelectTarget, "~/select", self.select_callback)
 
         self.get_logger().info(f"Selection mode: {self.selection_mode}")
+
+        self.create_subscription(
+            Bool,
+            "/arm_home/harvest_enabled",
+            self.harvest_enabled_callback,
+            latched
+        )
 
         self.create_subscription(
             LemonEllipseArray,
@@ -227,6 +243,10 @@ class LemonTarget(Node):
     # --------------------------------------------------
 
     def handle_detections(self, msg):
+
+        # home の間は候補も集めない (認識姿勢に着いてから数え直す)
+        if not self.harvest_enabled:
+            return
 
         if self.locked is not None:
             self.track(msg)
@@ -576,6 +596,20 @@ class LemonTarget(Node):
         p = self.locked.point
         self.exclusions.append(np.array([p.x, p.y, p.z]))
 
+        self.unlock()
+
+        response.success = True
+        response.message = (
+            f"Released ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}), "
+            f"{len(self.exclusions)} excluded"
+        )
+        self.get_logger().info(response.message)
+
+        return response
+
+    def unlock(self):
+        """固定中の対象を解除して、「対象なし」を配信する"""
+
         self.locked = None
         self.tracked = None
         self.axis_samples = []
@@ -592,16 +626,12 @@ class LemonTarget(Node):
         cleared_axis.header.stamp = cleared.header.stamp
         self.short_axis_pub.publish(cleared_axis)
 
-        response.success = True
-        response.message = (
-            f"Released ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}), "
-            f"{len(self.exclusions)} excluded"
-        )
-        self.get_logger().info(response.message)
-
-        return response
-
     def select_callback(self, request, response):
+
+        if not self.harvest_enabled:
+            response.success = False
+            response.message = "harvest is disabled (arm is at home)"
+            return response
 
         if self.locked is not None:
             response.success = False
@@ -690,6 +720,34 @@ class LemonTarget(Node):
             return None
 
         return np.array([out.point.x, out.point.y, out.point.z])
+
+    def harvest_enabled_callback(self, msg):
+
+        enabled = bool(msg.data)
+
+        if enabled == self.harvest_enabled:
+            return
+
+        self.harvest_enabled = enabled
+        self.get_logger().info(f"harvest_enabled: {enabled}")
+
+        # 切り替わったら集めた候補を捨てる (アームの位置が変わったため)
+        self.reset_collection()
+
+        if enabled:
+            return
+
+        # home へ動くので、固定中の対象を解除し、除外リストも消す
+        if self.locked is not None:
+            p = self.locked.point
+            self.unlock()
+            self.get_logger().info(
+                f"Unlocked ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}): harvest is disabled"
+            )
+
+        if self.exclusions:
+            self.get_logger().info(f"Cleared {len(self.exclusions)} exclusions")
+            self.exclusions = []
 
     def clear_exclusions_callback(self, request, response):
 
